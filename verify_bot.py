@@ -1,0 +1,91 @@
+import os
+import asyncio
+from datetime import datetime
+from telegram import Update
+from telegram.ext import (
+    ApplicationBuilder,
+    ChatMemberHandler,
+    MessageHandler,
+    ContextTypes,
+    filters
+)
+
+VERIFY_MINUTES = 10
+
+INTRO_TEMPLATE = (
+    "昵称：\n"
+    "年龄：\n"
+    "来自：\n"
+    "简单自我介绍："
+)
+
+REQUIRED_KEYWORDS = ["昵称", "年龄", "来自", "介绍"]
+
+pending_users = {}
+
+async def new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    for member in update.chat_member.new_chat_members:
+        user_id = member.id
+        chat_id = update.chat_member.chat.id
+
+        pending_users[user_id] = {
+            "chat_id": chat_id,
+            "photo": False,
+            "text_ok": False
+        }
+
+        welcome_text = (
+            f"👋 欢迎 {member.full_name}\n\n"
+            f"请在 {VERIFY_MINUTES} 分钟内完成验证：\n\n"
+            "📸 发送一张照片\n"
+            "📝 复制下方模板填写后发送\n\n"
+            "👇 请复制 👇\n"
+            f"{INTRO_TEMPLATE}\n\n"
+            "❌ 超时将被移出群"
+        )
+
+        await context.bot.send_message(chat_id=chat_id, text=welcome_text)
+        asyncio.create_task(verification_timer(context, user_id))
+
+async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    msg = update.message
+    if not user or user.id not in pending_users:
+        return
+
+    data = pending_users[user.id]
+
+    if msg.photo:
+        data["photo"] = True
+
+    text = msg.text or msg.caption or ""
+    if all(k in text for k in REQUIRED_KEYWORDS):
+        data["text_ok"] = True
+
+    if data["photo"] and data["text_ok"]:
+        pending_users.pop(user.id, None)
+        await msg.reply_text("✅ 验证成功，欢迎加入！🎉")
+
+async def verification_timer(context, user_id):
+    await asyncio.sleep(VERIFY_MINUTES * 60)
+    if user_id in pending_users:
+        chat_id = pending_users[user_id]["chat_id"]
+        try:
+            await context.bot.send_message(
+                chat_id=user_id,
+                text="⚠️ 你未完成验证，已被移出群。"
+            )
+        except:
+            pass
+        await context.bot.ban_chat_member(chat_id, user_id)
+        pending_users.pop(user_id, None)
+
+def main():
+    app = ApplicationBuilder().token(os.getenv("BOT_TOKEN")).build()
+    app.add_handler(ChatMemberHandler(new_member, ChatMemberHandler.CHAT_MEMBER))
+    app.add_handler(MessageHandler(filters.ALL, check_message))
+    print("🤖 Bot 已启动")
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
